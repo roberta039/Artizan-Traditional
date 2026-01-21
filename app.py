@@ -3,7 +3,7 @@ import google.generativeai as genai
 import sqlite3
 import uuid
 from PIL import Image
-import io
+import time
 
 # --- CONFIGURARE PAGINĂ ---
 st.set_page_config(
@@ -50,6 +50,16 @@ if "api_error" not in st.session_state:
 if "key_logs" not in st.session_state:
     st.session_state.key_logs = []
 
+# --- PROMPT-UL DE SISTEM (PERSONALITATEA AI) ---
+SYSTEM_PROMPT = """
+Ești un expert în artă populară românească, tradiții, folclor și marketing pentru produse handmade.
+Rolul tău este să ajuți un artist să creeze produse autentice (mărțișoare, cadouri de Crăciun, Paște).
+1. Analizează pozele încărcate din punct de vedere estetic și al materialelor.
+2. Sugerează îmbunătățiri cromatice sau materiale naturale (lemn, lână, lut) specifice sezonului.
+3. Creează o poveste lungă, emoționantă, cu iz arhaic românesc pentru fiecare produs, pe care artistul să o pună pe etichetă sau pe social media.
+Tonul trebuie să fie cald, încurajator și respectuos față de tradiție.
+"""
+
 # --- GESTIONARE CHEI API (ROTAȚIE & LOGGING) ---
 def get_system_api_keys():
     try:
@@ -69,7 +79,6 @@ def call_gemini_with_rotation(inputs):
     logs = [] # Lista de mesaje de stare
     
     # 1. Lista de chei (User Key + System Keys)
-    # Folosim o listă de tupluri (Nume_Sursă, Cheie)
     candidates = []
     
     if st.session_state.user_api_key:
@@ -88,6 +97,7 @@ def call_gemini_with_rotation(inputs):
     for source_name, key in candidates:
         try:
             genai.configure(api_key=key)
+            # Folosim gemini-2.5-flash
             model = genai.GenerativeModel('gemini-2.5-flash')
             
             # Testăm generarea
@@ -173,11 +183,10 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2913/2913465.png", width=100)
     st.title("Atelier Virtual")
     
-    # --- ZONA STATUS CHEI (NOU) ---
+    # --- ZONA STATUS CHEI ---
     with st.expander("📡 Status Conexiune Server", expanded=True):
         if st.session_state.key_logs:
             for log in st.session_state.key_logs:
-                # Colorăm textul în funcție de mesaj
                 if "❌" in log:
                     st.markdown(f"<div class='status-log key-expired'>{log}</div>", unsafe_allow_html=True)
                 elif "✅" in log:
@@ -185,7 +194,7 @@ with st.sidebar:
                 else:
                     st.markdown(f"<div class='status-log'>{log}</div>", unsafe_allow_html=True)
         else:
-            st.caption("Nicio acțiune recentă.")
+            st.caption("Așteaptă prima interacțiune...")
 
     # --- ZONA INPUT CHEIE MANUALĂ ---
     with st.expander("🔑 Introdu Cheie Proprie", expanded=st.session_state.api_error):
@@ -194,7 +203,7 @@ with st.sidebar:
         if user_key_input != st.session_state.user_api_key:
             st.session_state.user_api_key = user_key_input
             st.session_state.api_error = False
-            st.session_state.key_logs = [] # Resetăm logurile
+            st.session_state.key_logs = [] 
             st.rerun()
 
     st.divider()
@@ -228,41 +237,39 @@ if uploaded_file:
         pass
 
 if prompt := st.chat_input("Scrie mesajul tău..."):
+    # 1. Afișăm și salvăm ce a scris userul
     with st.chat_message("user"):
         st.markdown(prompt)
     save_message(session_id, "user", prompt, has_image=(uploaded_file is not None))
 
-    # Instrucțiuni de sistem
-SYSTEM_PROMPT = """
-Ești un expert în artă populară românească, tradiții, folclor și marketing pentru produse handmade.
-Rolul tău este să ajuți un artist să creeze produse autentice (mărțișoare, cadouri de Crăciun, Paște).
-1. Analizează pozele încărcate din punct de vedere estetic și al materialelor.
-2. Sugerează îmbunătățiri cromatice sau materiale naturale (lemn, lână, lut) specifice sezonului.
-3. Creează o poveste lungă, emoționantă, cu iz arhaic românesc pentru fiecare produs, pe care artistul să o pună pe etichetă sau pe social media.
-Tonul trebuie să fie cald, încurajator și respectuos față de tradiție.
-"""
+    # 2. Construim lista de input pentru Gemini
+    # Începem cu Prompt-ul de sistem definit la început
+    inputs = [SYSTEM_PROMPT]
+    
+    # Adăugăm istoricul recent pentru context
+    for role, content, _ in history_data[-6:]:
+        role_gemini = "user" if role == "user" else "model"
+        inputs.append(f"{role_gemini}: {content}")
+    
+    # Adăugăm imaginea dacă există
+    if image_data:
+        inputs.append(image_data)
+        inputs.append("Analizează imaginea atașată.")
 
+    # Adăugăm întrebarea curentă
+    inputs.append(f"user: {prompt}")
 
-    # APEL CĂTRE AI + STATUS
+    # 3. Apelăm AI-ul cu sistemul de rotație
     with st.chat_message("assistant"):
         with st.spinner("Conectare la meșterul digital..."):
             
             # Resetăm logurile vechi
             st.session_state.key_logs = []
             
-            # Apelăm funcția care încearcă cheile pe rând
+            # Apelăm funcția
             ai_text, logs = call_gemini_with_rotation(inputs)
             
-            # Salvăm logurile în sesiune ca să apară în Sidebar
+            # Salvăm logurile
             st.session_state.key_logs = logs
             
-            if ai_text:
-                st.markdown(ai_text)
-                save_message(session_id, "assistant", ai_text)
-                st.session_state.api_error = False
-                # Forțăm reîncărcarea sidebar-ului pentru a arăta log-ul verde
-                st.rerun() 
-            else:
-                st.error("Toate metodele de conectare au eșuat. Verifică panoul din stânga pentru detalii.")
-                st.session_state.api_error = True
-                st.rerun()
+            
