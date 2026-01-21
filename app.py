@@ -30,9 +30,9 @@ st.markdown("""
 # --- CONFIGURARE GEMINI API ---
 # Se preia cheia din Streamlit Secrets
 try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEYS"])
 except:
-    st.error("Te rog configurează GOOGLE_API_KEY în Streamlit Secrets!")
+    st.error("Te rog configurează GOOGLE_API_KEYS în Streamlit Secrets!")
     st.stop()
 
 # Modelul Gemini (Flash este rapid și multimodal)
