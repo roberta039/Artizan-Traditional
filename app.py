@@ -85,7 +85,7 @@ def call_gemini_with_rotation(inputs):
     for source_name, key in candidates:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             
             # Setăm o configurație de generare pentru a evita răspunsurile goale
             response = model.generate_content(inputs)
