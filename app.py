@@ -98,7 +98,7 @@ def call_gemini_with_rotation(inputs):
         try:
             genai.configure(api_key=key)
             # Folosim gemini-2.5-flash
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash-lite')
             
             # Testăm generarea
             response = model.generate_content(inputs)
