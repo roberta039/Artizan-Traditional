@@ -12,17 +12,13 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- CSS PENTRU STILIZARE ---
+# --- CSS STILIZARE ---
 st.markdown("""
 <style>
     .stChatMessage {
         background-color: #f0f2f6;
         border-radius: 10px;
         padding: 10px;
-    }
-    .stButton button {
-        background-color: #ff4b4b;
-        color: white;
     }
     .status-log {
         font-size: 0.8em;
@@ -42,7 +38,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- INIȚIALIZARE SESSION STATE ---
+# --- STATE ---
 if "user_api_key" not in st.session_state:
     st.session_state.user_api_key = ""
 if "api_error" not in st.session_state:
@@ -50,17 +46,17 @@ if "api_error" not in st.session_state:
 if "key_logs" not in st.session_state:
     st.session_state.key_logs = []
 
-# --- PROMPT-UL DE SISTEM (PERSONALITATEA AI) ---
+# --- SYSTEM PROMPT ---
 SYSTEM_PROMPT = """
 Ești un expert în artă populară românească, tradiții, folclor și marketing pentru produse handmade.
 Rolul tău este să ajuți un artist să creeze produse autentice (mărțișoare, cadouri de Crăciun, Paște).
-1. Analizează pozele încărcate din punct de vedere estetic și al materialelor.
-2. Sugerează îmbunătățiri cromatice sau materiale naturale (lemn, lână, lut) specifice sezonului.
-3. Creează o poveste lungă, emoționantă, cu iz arhaic românesc pentru fiecare produs, pe care artistul să o pună pe etichetă sau pe social media.
+1. Analizează pozele încărcate.
+2. Sugerează îmbunătățiri cromatice sau materiale naturale (lemn, lână, lut).
+3. Creează o poveste lungă, emoționantă, cu iz arhaic românesc.
 Tonul trebuie să fie cald, încurajator și respectuos față de tradiție.
 """
 
-# --- GESTIONARE CHEI API (ROTAȚIE & LOGGING) ---
+# --- GESTIONARE CHEI API ---
 def get_system_api_keys():
     try:
         keys = st.secrets["GOOGLE_API_KEYS"]
@@ -73,12 +69,7 @@ def get_system_api_keys():
         return []
 
 def call_gemini_with_rotation(inputs):
-    """
-    Încearcă cheile pe rând și returnează un log detaliat al erorilor.
-    """
-    logs = [] # Lista de mesaje de stare
-    
-    # 1. Lista de chei (User Key + System Keys)
+    logs = [] 
     candidates = []
     
     if st.session_state.user_api_key:
@@ -91,44 +82,34 @@ def call_gemini_with_rotation(inputs):
     if not candidates:
         return None, ["Nu există chei configurate."]
 
-    last_error_msg = ""
-
-    # 2. Bucla de încercare
     for source_name, key in candidates:
         try:
             genai.configure(api_key=key)
-            # Folosim gemini-2.5-flash
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
-            # Testăm generarea
+            # Setăm o configurație de generare pentru a evita răspunsurile goale
             response = model.generate_content(inputs)
             
-            # Dacă ajungem aici, e succes
-            logs.append(f"✅ {source_name}: FUNCȚIONALĂ")
-            return response.text, logs
+            # Verificăm dacă răspunsul e valid
+            if response.text:
+                logs.append(f"✅ {source_name}: FUNCȚIONALĂ")
+                return response.text, logs
+            else:
+                 logs.append(f"⚠️ {source_name}: Răspuns gol (Blocat de filtre?)")
 
         except Exception as e:
             error_str = str(e)
-            status_msg = ""
-            
-            # Detectăm tipul erorii
             if "API key not valid" in error_str or "400" in error_str:
-                status_msg = f"❌ {source_name}: INVALIDĂ / EXPIRATĂ"
-            elif "429" in error_str or "Resource has been exhausted" in error_str:
-                status_msg = f"⚠️ {source_name}: LIMITĂ ATINSĂ (Quota Exceeded)"
-            elif "403" in error_str:
-                status_msg = f"⛔ {source_name}: ACCES INTERZIS (Verifică setările Google Cloud)"
+                msg = f"❌ {source_name}: INVALIDĂ / EXPIRATĂ"
+            elif "429" in error_str:
+                msg = f"⚠️ {source_name}: LIMITĂ ATINSĂ"
             else:
-                status_msg = f"⚠️ {source_name}: EROARE NECUNOSCUTĂ ({error_str[:30]}...)"
-            
-            logs.append(status_msg)
-            last_error_msg = error_str
-            # Continuăm la următoarea cheie din listă...
+                msg = f"⚠️ {source_name}: Eroare ({error_str[:20]}...)"
+            logs.append(msg)
 
-    # Dacă am ieșit din buclă, toate au eșuat
     return None, logs
 
-# --- DATABASE (SQLite) ---
+# --- DATABASE ---
 def init_db():
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
@@ -178,15 +159,12 @@ if "session_id" not in query_params:
 else:
     session_id = query_params["session_id"]
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2913/2913465.png", width=100)
-    st.title("Atelier Virtual")
-    
-    # --- ZONA STATUS CHEI ---
-    with st.expander("📡 Status Conexiune Server", expanded=True):
-        if st.session_state.key_logs:
-            for log in st.session_state.key_logs:
+# --- FUNCTIE UPDATE SIDEBAR (AJUTOR VIZUAL) ---
+def render_logs(container, logs):
+    """Afișează logurile într-un container dat, fără rerun."""
+    with container:
+        if logs:
+            for log in logs:
                 if "❌" in log:
                     st.markdown(f"<div class='status-log key-expired'>{log}</div>", unsafe_allow_html=True)
                 elif "✅" in log:
@@ -194,16 +172,25 @@ with st.sidebar:
                 else:
                     st.markdown(f"<div class='status-log'>{log}</div>", unsafe_allow_html=True)
         else:
-            st.caption("Așteaptă prima interacțiune...")
+            st.caption("Așteaptă acțiune...")
 
-    # --- ZONA INPUT CHEIE MANUALĂ ---
+# --- SIDEBAR ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2913/2913465.png", width=100)
+    st.title("Atelier Virtual")
+    
+    with st.expander("📡 Status Conexiune Server", expanded=True):
+        # Placeholder pentru loguri dinamice
+        log_container = st.empty()
+        # Afișăm logurile existente din session state
+        render_logs(log_container, st.session_state.key_logs)
+
     with st.expander("🔑 Introdu Cheie Proprie", expanded=st.session_state.api_error):
-        st.caption("Dacă toate cheile serverului sunt expirate, introdu una personală.")
+        st.caption("Opțional: Introdu o cheie personală.")
         user_key_input = st.text_input("Google API Key", value=st.session_state.user_api_key, type="password")
         if user_key_input != st.session_state.user_api_key:
             st.session_state.user_api_key = user_key_input
             st.session_state.api_error = False
-            st.session_state.key_logs = [] 
             st.rerun()
 
     st.divider()
@@ -214,10 +201,10 @@ with st.sidebar:
         st.session_state.key_logs = []
         st.rerun()
 
-# --- CHAT UI ---
+# --- MAIN UI ---
 st.title("🎨 Consultant Tradiții & Handmade")
 
-# Afișare istoric
+# 1. Încărcare Istoric
 history_data = get_history(session_id)
 for role, content, has_image in history_data:
     with st.chat_message(role):
@@ -225,7 +212,7 @@ for role, content, has_image in history_data:
         if has_image and role == "user":
             st.caption("*(Imagine analizată anterior)*")
 
-# Inputuri
+# 2. Input Utilizator
 uploaded_file = st.file_uploader("Încarcă o poză (JPEG/PNG)", type=["jpg", "jpeg", "png"])
 image_data = None
 if uploaded_file:
@@ -237,39 +224,42 @@ if uploaded_file:
         pass
 
 if prompt := st.chat_input("Scrie mesajul tău..."):
-    # 1. Afișăm și salvăm ce a scris userul
+    # Afișare instantanee mesaj user
     with st.chat_message("user"):
         st.markdown(prompt)
     save_message(session_id, "user", prompt, has_image=(uploaded_file is not None))
 
-    # 2. Construim lista de input pentru Gemini
-    # Începem cu Prompt-ul de sistem definit la început
+    # Pregătire context
     inputs = [SYSTEM_PROMPT]
-    
-    # Adăugăm istoricul recent pentru context
-    for role, content, _ in history_data[-6:]:
+    for role, content, _ in history_data[-5:]:
         role_gemini = "user" if role == "user" else "model"
         inputs.append(f"{role_gemini}: {content}")
     
-    # Adăugăm imaginea dacă există
     if image_data:
         inputs.append(image_data)
-        inputs.append("Analizează imaginea atașată.")
-
-    # Adăugăm întrebarea curentă
+        inputs.append("Analizează imaginea aceasta.")
+    
     inputs.append(f"user: {prompt}")
 
-    # 3. Apelăm AI-ul cu sistemul de rotație
+    # Generare AI
     with st.chat_message("assistant"):
-        with st.spinner("Conectare la meșterul digital..."):
-            
-            # Resetăm logurile vechi
-            st.session_state.key_logs = []
+        with st.spinner("Meșterul gândește..."):
             
             # Apelăm funcția
             ai_text, logs = call_gemini_with_rotation(inputs)
             
-            # Salvăm logurile
+            # Actualizăm logurile în sesiune și vizual în sidebar
             st.session_state.key_logs = logs
+            render_logs(log_container, logs) # <--- Aici actualizăm sidebar-ul fără rerun
             
-            
+            if ai_text:
+                st.markdown(ai_text)
+                save_message(session_id, "assistant", ai_text)
+                st.session_state.api_error = False
+                # IMPORTANT: AM SCOS st.rerun() de aici!
+            else:
+                st.error("Eroare: Nu s-a putut genera un răspuns.")
+                st.session_state.api_error = True
+                # Aici lăsăm rerun doar la eroare ca să deschidă meniul de chei
+                time.sleep(2)
+                st.rerun()
