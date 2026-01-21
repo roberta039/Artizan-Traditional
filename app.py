@@ -4,6 +4,7 @@ import sqlite3
 import uuid
 from PIL import Image
 import io
+import time
 
 # --- CONFIGURARE PAGINĂ ---
 st.set_page_config(
@@ -27,18 +28,69 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONFIGURARE GEMINI API ---
-# Se preia cheia din Streamlit Secrets
-try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEYS"])
-except:
-    st.error("Te rog configurează GOOGLE_API_KEYS în Streamlit Secrets!")
-    st.stop()
+# --- INIȚIALIZARE SESSION STATE ---
+if "user_api_key" not in st.session_state:
+    st.session_state.user_api_key = ""
+if "api_error" not in st.session_state:
+    st.session_state.api_error = False
 
-# Modelul Gemini (Flash este rapid și multimodal)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# --- GESTIONARE CHEI API (ROTAȚIE & FALLBACK) ---
+def get_system_api_keys():
+    """Extrage lista de chei din secrets, indiferent dacă e string sau listă."""
+    try:
+        keys = st.secrets["GOOGLE_API_KEYS"]
+        if isinstance(keys, str):
+            # Dacă userul le-a pus separate prin virgulă "key1,key2"
+            return [k.strip() for k in keys.split(",") if k.strip()]
+        elif isinstance(keys, list):
+            return keys
+        return []
+    except:
+        return []
 
-# Instrucțiuni de sistem (Persona AI-ului)
+def call_gemini_with_rotation(inputs):
+    """
+    Încearcă să genereze conținut folosind cheile disponibile în ordine:
+    1. Cheia introdusă manual de user (dacă există).
+    2. Cheile din server (loop).
+    """
+    # Colectăm toate cheile posibile
+    available_keys = []
+    
+    # 1. Prioritate: Cheia utilizatorului
+    if st.session_state.user_api_key:
+        available_keys.append(st.session_state.user_api_key)
+    
+    # 2. Cheile din sistem
+    system_keys = get_system_api_keys()
+    available_keys.extend(system_keys)
+
+    # Dacă nu avem nicio cheie, returnăm eroare specifică
+    if not available_keys:
+        return None, "NO_KEYS"
+
+    last_error = ""
+    
+    # BUCLA DE ROTAȚIE
+    for key in available_keys:
+        try:
+            # Configurăm Gemini cu cheia curentă
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # Încercăm generarea
+            response = model.generate_content(inputs)
+            return response.text, None # Succes!
+            
+        except Exception as e:
+            # Dacă eșuează, trecem la următoarea cheie
+            last_error = str(e)
+            continue 
+
+    # Dacă am ieșit din buclă, înseamnă că toate cheile au eșuat
+    return None, last_error
+
+# Instrucțiuni de sistem
 SYSTEM_PROMPT = """
 Ești un expert în artă populară românească, tradiții, folclor și marketing pentru produse handmade.
 Rolul tău este să ajuți un artist să creeze produse autentice (mărțișoare, cadouri de Crăciun, Paște).
@@ -87,101 +139,102 @@ def clear_session_history(session_id):
     conn.commit()
     conn.close()
 
-# Inițializăm baza de date la pornire
 init_db()
 
-# --- GESTIONARE SESIUNE (URL Query Params) ---
-# Verificăm dacă există un ID în URL
+# --- GESTIONARE SESIUNE URL ---
 query_params = st.query_params
 if "session_id" not in query_params:
-    # Generăm un ID nou și îl punem în URL
     new_id = str(uuid.uuid4())
     st.query_params["session_id"] = new_id
     session_id = new_id
 else:
-    # Folosim ID-ul existent
     session_id = query_params["session_id"]
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2913/2913465.png", width=100)
     st.title("Atelier Virtual")
-    st.info(f"ID Sesiune: {session_id[:8]}...")
-    st.markdown("Acest ID păstrează conversația chiar dacă închizi pagina.")
     
+    # --- ZONA DE CHEIE API MANUALĂ ---
+    # Apare doar dacă userul vrea să pună o cheie sau dacă avem eroare
+    with st.expander("🔑 Setări Cheie API", expanded=st.session_state.api_error):
+        st.caption("Dacă serverul este ocupat, poți folosi cheia ta personală.")
+        user_key_input = st.text_input("Google API Key", value=st.session_state.user_api_key, type="password")
+        if user_key_input != st.session_state.user_api_key:
+            st.session_state.user_api_key = user_key_input
+            st.session_state.api_error = False # Resetăm eroarea
+            st.rerun()
+            
+    st.divider()
     if st.button("🔄 Resetează Conversația", type="primary"):
         clear_session_history(session_id)
-        # Generăm un nou ID pentru a curăța complet contextul
         new_id = str(uuid.uuid4())
         st.query_params["session_id"] = new_id
         st.rerun()
 
 # --- LOGICA DE CHAT ---
 st.title("🎨 Consultant Tradiții & Handmade")
-st.markdown("Încarcă o poză cu creația ta și hai să îi scriem povestea!")
 
-# Încărcăm istoricul din baza de date în UI
+# Dacă a fost o eroare de API, afișăm avertismentul
+if st.session_state.api_error:
+    st.warning("⚠️ Toate cheile serverului sunt ocupate sau expirate. Te rog introdu o cheie Google API validă în meniul din stânga pentru a continua.")
+
+# Afișare istoric
 history_data = get_history(session_id)
-
 for role, content, has_image in history_data:
     with st.chat_message(role):
         st.markdown(content)
         if has_image and role == "user":
             st.caption("*(Imagine analizată anterior)*")
 
-# Zona de input pentru fișiere
+# Input fișiere
 uploaded_file = st.file_uploader("Încarcă o poză (JPEG/PNG) sau PDF", type=["jpg", "jpeg", "png", "pdf"])
 image_data = None
 
 if uploaded_file:
-    # Afișăm imaginea/fișierul
     try:
         if uploaded_file.type in ["image/jpeg", "image/png"]:
             image = Image.open(uploaded_file)
             st.image(image, caption="Produsul tău", use_column_width=True)
             image_data = image
-        else:
-            st.info("Fișier PDF încărcat. AI-ul îl va analiza.")
-            # Pentru PDF e nevoie de procesare specială, dar Gemini acceptă bytes
-            # Aici simplificăm tratând imaginile ca prioritate vizuală
     except Exception as e:
-        st.error(f"Eroare la încărcare: {e}")
+        st.error(f"Eroare fișier: {e}")
 
-# Zona de input text
-if prompt := st.chat_input("Despre ce produs vorbim azi?"):
-    # 1. Afișăm mesajul utilizatorului
+# Input text
+if prompt := st.chat_input("Scrie aici..."):
+    # Salvare și afișare mesaj user
     with st.chat_message("user"):
         st.markdown(prompt)
-    
-    # 2. Salvăm mesajul utilizatorului în DB
     save_message(session_id, "user", prompt, has_image=(uploaded_file is not None))
 
-    # 3. Pregătim apelul către Gemini
-    inputs = [SYSTEM_PROMPT] # Începem cu instrucțiunile
-    
-    # Adăugăm istoricul recent pentru context (ultimele 10 mesaje pentru a nu depăși tokenii rapid)
-    for role, content, _ in history_data[-10:]:
+    # Pregătire input AI
+    inputs = [SYSTEM_PROMPT]
+    # Context (ultimele 6 mesaje pentru a economisi tokeni, dar a păstra firul)
+    for role, content, _ in history_data[-6:]:
         role_gemini = "user" if role == "user" else "model"
         inputs.append(f"{role_gemini}: {content}")
     
-    # Adăugăm inputul curent
     inputs.append(f"user: {prompt}")
-
-    # Dacă avem imagine, o adăugăm la request
     if image_data:
         inputs.append(image_data)
-        inputs.append("Analizează această imagine în contextul cerinței.")
 
-    # 4. Generăm răspunsul
+    # Generare Răspuns cu ROTAȚIE CHEI
     with st.chat_message("assistant"):
-        with st.spinner("Meșterul AI gândește..."):
-            try:
-                response = model.generate_content(inputs)
-                ai_text = response.text
+        with st.spinner("Caut inspirație..."):
+            ai_text, error_msg = call_gemini_with_rotation(inputs)
+            
+            if ai_text:
+                # SUCCES
                 st.markdown(ai_text)
-                
-                # 5. Salvăm răspunsul AI în DB
                 save_message(session_id, "assistant", ai_text)
+                st.session_state.api_error = False
+            else:
+                # EȘEC TOTAL
+                if error_msg == "NO_KEYS":
+                    st.error("Nu există nicio cheie API configurată.")
+                else:
+                    st.error(f"Nu am putut genera un răspuns. Detalii: {error_msg}")
                 
-            except Exception as e:
-                st.error(f"A apărut o eroare de conexiune cu Google: {e}")
+                # Activăm flag-ul de eroare pentru a deschide meniul de setări
+                st.session_state.api_error = True
+                st.rerun()
